@@ -5,8 +5,12 @@ Loads all settings from environment variables (/.env file).
 Every other module imports from here — never reads .env directly.
 """
 
+import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
+
+# On Railway, /data is the persistent volume mount point
+_DEFAULT_DB = "sqlite:////data/trading.db" if os.path.isdir("/data") else "sqlite:///data/trading.db"
 
 
 class Settings(BaseSettings):
@@ -31,7 +35,7 @@ class Settings(BaseSettings):
     # --- Application ---
     environment: str = Field(default="development", description="development | paper | live")
     log_level: str = Field(default="DEBUG", description="Logging verbosity")
-    database_url: str = Field(default="sqlite:///data/trading.db")
+    database_url: str = Field(default=_DEFAULT_DB)
 
     # --- Risk Parameters ---
     max_risk_per_trade_pct: float = Field(default=0.02, description="Max risk per trade as fraction")

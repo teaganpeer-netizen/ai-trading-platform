@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass
 import logging
 from data import get_session, BarRepository, BarProcessor, Trade, TradeRepository
+from data.collectors.yfinance_collector import YFinanceCollector
 from risk import RiskManager, CircuitBreaker, CircuitState
 from ai_engine import AIDecisionMaker
 from config.settings import settings
@@ -78,7 +79,30 @@ class PaperTrader:
         self.peak_capital = initial_capital
         self.current_capital = initial_capital
 
+        self._restore_open_positions()
         logger.info(f"✓ Paper Trader initialized (capital: ${initial_capital:,.0f})")
+
+    def _restore_open_positions(self) -> None:
+        """Reload open positions from DB so restarts don't cause duplicate buys."""
+        open_trades = self.trade_repo.get_open_trades()
+        capital_deployed = 0.0
+        for trade in open_trades:
+            symbol = trade.symbol
+            # If multiple DB rows exist for the same symbol (legacy duplicates), keep the latest
+            if symbol not in self.open_positions or trade.entry_time > self.open_positions[symbol][2]:
+                self.open_positions[symbol] = (
+                    trade.quantity,
+                    trade.entry_price,
+                    trade.entry_time,
+                    trade.risk_metric or 0.0,
+                )
+                capital_deployed += trade.quantity * trade.entry_price
+        if self.open_positions:
+            self.current_capital = max(0.0, self.initial_capital - capital_deployed)
+            logger.info(
+                f"✓ Restored {len(self.open_positions)} open position(s) from DB "
+                f"({', '.join(self.open_positions.keys())})"
+            )
 
     def run_iteration(self, use_ai: bool = True) -> dict:
         """
@@ -132,33 +156,34 @@ class PaperTrader:
         df = df.sort_index()
         df = BarProcessor.enrich_bars(df)
 
-        current_price = df.iloc[-1]["close"]
+        # Use live price if available; fall back to last DB bar
+        live = YFinanceCollector.get_live_price(symbol)
+        current_price = live if live else df.iloc[-1]["close"]
 
         # Check if we should close existing position
         if symbol in self.open_positions:
             self._check_close_position(symbol, current_price, df)
             return
 
+        # Portfolio context needed for both risk checks and AI prompt — always compute it
+        portfolio_context = {
+            "cash": self.current_capital - sum(
+                qty * price for qty, price, _, _ in self.open_positions.values()
+            ),
+            "open_positions": len(self.open_positions),
+            "portfolio_value": self._calculate_portfolio_value(),
+            "exposure_pct": self.risk_manager.get_exposure(
+                {s: p for s, (q, p, _, _) in self.open_positions.items()}
+            ),
+            "daily_pnl": self.daily_pnl,
+        }
+
         # Try to get BUY decision (AI preferred, fallback to technical)
         decision = None
 
         if use_ai and self.ai_maker:
-            # Try AI first
             try:
-                portfolio_context = {
-                    "cash": self.current_capital - sum(
-                        qty * price for qty, price, _, _ in self.open_positions.values()
-                    ),
-                    "open_positions": len(self.open_positions),
-                    "portfolio_value": self._calculate_portfolio_value(),
-                    "exposure_pct": self.risk_manager.get_exposure(
-                        {s: p for s, (q, p, _, _) in self.open_positions.items()}
-                    ),
-                    "daily_pnl": self.daily_pnl,
-                }
-
                 decision = self.ai_maker.analyze_symbol(symbol, df, current_price, portfolio_context)
-
             except Exception as e:
                 logger.debug(f"AI failed for {symbol}: {e}, using technical analysis")
                 decision = None
@@ -317,15 +342,15 @@ class PaperTrader:
         )
 
     def _calculate_portfolio_value(self) -> float:
-        """Calculate current portfolio value."""
-        # Get current prices for open positions
+        """Calculate current portfolio value using live prices."""
         current_value = self.current_capital
         for symbol, (qty, entry_price, _, _) in self.open_positions.items():
-            bars = self.bar_repo.get_bars(symbol, limit=1)
-            if bars:
-                current_price = bars[0].close
-                current_value += qty * current_price
-
+            live = YFinanceCollector.get_live_price(symbol)
+            if live:
+                current_value += qty * live
+            else:
+                bars = self.bar_repo.get_bars(symbol, limit=1)
+                current_value += qty * (bars[0].close if bars else entry_price)
         return current_value
 
     def get_summary(self) -> dict:

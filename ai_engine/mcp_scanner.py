@@ -3,93 +3,136 @@ Market Scanner MCP - Finds high-probability trading candidates.
 Discovers opportunities without relying on pre-set watchlist.
 """
 
+import io
 import logging
 from typing import Optional
+import requests
 import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
+# Cached S&P 500 list so we don't hit Wikipedia on every scan
+_SP500_CACHE: list[str] | None = None
+
+
+def _fetch_sp500_tickers() -> list[str]:
+    """Pull the current S&P 500 ticker list from Wikipedia. Cached after first call."""
+    global _SP500_CACHE
+    if _SP500_CACHE:
+        return _SP500_CACHE
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; trading-scanner/1.0)"}
+        resp = requests.get(
+            "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
+            headers=headers,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        table = pd.read_html(io.StringIO(resp.text), header=0)[0]
+        tickers = table["Symbol"].str.replace(".", "-", regex=False).tolist()
+        # Add major sector ETFs for breadth
+        tickers += ["SPY", "QQQ", "IWM", "DIA", "XLK", "XLF", "XLE", "XLV", "XLI"]
+        _SP500_CACHE = sorted(set(tickers))
+        logger.info(f"Loaded {len(_SP500_CACHE)} symbols from S&P 500 + ETFs")
+        return _SP500_CACHE
+    except Exception as e:
+        logger.warning(f"Could not fetch S&P 500 list ({e}), falling back to core universe")
+        return _CORE_UNIVERSE
+
+
+# Fallback if Wikipedia is unreachable
+_CORE_UNIVERSE = [
+    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "AMD", "INTC",
+    "NFLX", "ADBE", "ASML", "AVGO", "JPM", "BAC", "GS", "MS", "C", "WFC",
+    "JNJ", "UNH", "PFE", "ABBV", "TMO", "LLY", "WMT", "MCD", "KO", "PEP",
+    "NKE", "XOM", "CVX", "COP", "SLB", "EOG", "SPY", "QQQ", "IWM", "DIA",
+]
+
 
 class MarketScanner:
-    """Scans market for trading opportunities."""
-
-    # Popular liquid stocks to scan
-    LIQUID_UNIVERSE = [
-        # Mega cap (high volume)
-        "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
-        # Large cap tech
-        "AMD", "INTC", "NFLX", "ADBE", "ASML", "AVGO",
-        # Financial
-        "JPM", "BAC", "GS", "MS", "C", "WFC",
-        # Healthcare
-        "JNJ", "UNH", "PFE", "ABBV", "TMO", "LLY",
-        # Consumer
-        "WMT", "MCD", "KO", "PEP", "NKE", "MCD",
-        # Energy
-        "XOM", "CVX", "COP", "SLB", "EOG",
-        # Indices
-        "SPY", "QQQ", "IWM", "DIA",
-    ]
+    """Scans the full S&P 500 for trading opportunities."""
 
     def __init__(self, universe: Optional[list] = None):
-        self.universe = universe or self.LIQUID_UNIVERSE
+        self.universe = universe or _fetch_sp500_tickers()
         logger.info(f"Scanner initialized with {len(self.universe)} symbols")
 
-    def find_high_gainers(self, period: str = "1d", top_n: int = 10) -> dict:
-        """Find top gainers in the market."""
+    def _batch_download(self, period: str) -> pd.DataFrame:
+        """
+        Download OHLCV data for the full universe in one yfinance call.
+        Returns a DataFrame with MultiIndex columns (field, symbol).
+        Falls back to empty DataFrame on failure.
+        """
+        try:
+            data = yf.download(
+                self.universe,
+                period=period,
+                auto_adjust=True,
+                progress=False,
+                threads=True,
+            )
+            return data
+        except Exception as e:
+            logger.warning(f"Batch download failed: {e}")
+            return pd.DataFrame()
+
+    def find_high_gainers(self, period: str = "5d", top_n: int = 10) -> dict:
+        """Find top gainers across the full universe using a single batch download."""
+        data = self._batch_download(period)
+        if data.empty:
+            return {}
+
         gainers = {}
+        close = data["Close"] if "Close" in data.columns else data.xs("Close", axis=1, level=0)
+        volume = data["Volume"] if "Volume" in data.columns else data.xs("Volume", axis=1, level=0)
 
-        for symbol in self.universe:
+        for symbol in close.columns:
             try:
-                ticker = yf.Ticker(symbol)
-                hist = ticker.history(period=period)
-
-                if len(hist) < 2:
+                prices = close[symbol].dropna()
+                if len(prices) < 2:
                     continue
-
-                current = hist.iloc[-1]["Close"]
-                previous = hist.iloc[0]["Close"]
+                current = prices.iloc[-1]
+                previous = prices.iloc[0]
                 change_pct = ((current - previous) / previous * 100) if previous != 0 else 0
-
-                if change_pct > 0:  # Only gainers
-                    volume = hist.iloc[-1].get("Volume", 0)
+                if change_pct > 0:
+                    vol = int(volume[symbol].iloc[-1]) if symbol in volume.columns else 0
                     gainers[symbol] = {
                         "change_pct": round(change_pct, 2),
                         "current_price": round(current, 2),
-                        "volume": int(volume),
+                        "volume": vol,
                         "momentum": "strong" if change_pct > 5 else "moderate" if change_pct > 2 else "mild",
                     }
-            except Exception as e:
-                logger.debug(f"Failed to scan {symbol}: {e}")
+            except Exception:
                 continue
 
-        # Sort by % change descending
         sorted_gainers = dict(sorted(gainers.items(), key=lambda x: x[1]["change_pct"], reverse=True))
         return dict(list(sorted_gainers.items())[:top_n])
 
     def find_volume_spikes(self, threshold_multiplier: float = 2.0, top_n: int = 10) -> dict:
-        """Find stocks with unusual volume spikes."""
+        """Find stocks with unusual volume vs 20-day average using a batch download."""
+        data = self._batch_download("30d")
+        if data.empty:
+            return {}
+
         volume_spikes = {}
+        close = data["Close"] if "Close" in data.columns else data.xs("Close", axis=1, level=0)
+        volume = data["Volume"] if "Volume" in data.columns else data.xs("Volume", axis=1, level=0)
 
-        for symbol in self.universe:
+        for symbol in volume.columns:
             try:
-                ticker = yf.Ticker(symbol)
-                hist = ticker.history(period="30d")
-
-                if len(hist) < 10:
+                vol_series = volume[symbol].dropna()
+                if len(vol_series) < 10:
                     continue
-
-                current_volume = hist.iloc[-1]["Volume"]
-                avg_volume = hist["Volume"].iloc[-20:].mean()
+                current_volume = vol_series.iloc[-1]
+                avg_volume = vol_series.iloc[-20:].mean()
                 volume_ratio = current_volume / avg_volume if avg_volume > 0 else 0
 
                 if volume_ratio > threshold_multiplier:
-                    current_price = hist.iloc[-1]["Close"]
-                    prev_close = hist.iloc[-2]["Close"]
+                    prices = close[symbol].dropna()
+                    current_price = prices.iloc[-1]
+                    prev_close = prices.iloc[-2] if len(prices) > 1 else current_price
                     price_change = ((current_price - prev_close) / prev_close * 100) if prev_close != 0 else 0
-
                     volume_spikes[symbol] = {
                         "volume_ratio": round(volume_ratio, 2),
                         "current_volume": int(current_volume),
@@ -97,75 +140,76 @@ class MarketScanner:
                         "price_change": round(price_change, 2),
                         "signal_strength": "very_strong" if volume_ratio > 4 else "strong" if volume_ratio > 2.5 else "moderate",
                     }
-            except Exception as e:
-                logger.debug(f"Failed to scan volume for {symbol}: {e}")
+            except Exception:
                 continue
 
         sorted_spikes = dict(sorted(volume_spikes.items(), key=lambda x: x[1]["volume_ratio"], reverse=True))
         return dict(list(sorted_spikes.items())[:top_n])
 
     def find_breakout_candidates(self, period_days: int = 252, top_n: int = 10) -> dict:
-        """Find stocks breaking out of resistance."""
+        """Find stocks breaking out of 52-week resistance using a batch download."""
+        data = self._batch_download("1y")
+        if data.empty:
+            return {}
+
         breakouts = {}
+        close = data["Close"] if "Close" in data.columns else data.xs("Close", axis=1, level=0)
+        high = data["High"] if "High" in data.columns else data.xs("High", axis=1, level=0)
+        volume = data["Volume"] if "Volume" in data.columns else data.xs("Volume", axis=1, level=0)
 
-        for symbol in self.universe:
+        for symbol in close.columns:
             try:
-                ticker = yf.Ticker(symbol)
-                hist = ticker.history(period=f"{period_days}d")
-
-                if len(hist) < 50:
+                prices = close[symbol].dropna()
+                highs = high[symbol].dropna()
+                if len(prices) < 50:
                     continue
+                high_52w = highs.max()
+                current_price = prices.iloc[-1]
+                recent_high = highs.iloc[-3:].max()
 
-                # Simple breakout: price > 52-week high in last 3 days
-                high_52w = hist["High"].iloc[-252:].max() if len(hist) >= 252 else hist["High"].max()
-                current_price = hist.iloc[-1]["Close"]
-                recent_high = hist["High"].iloc[-3:].max()
-
-                if current_price >= high_52w and current_price == recent_high:
-                    volume_trend = hist["Volume"].iloc[-5:].mean() / hist["Volume"].iloc[-20:].mean()
-
+                if current_price >= high_52w * 0.99 and current_price >= recent_high * 0.99:
+                    vol = volume[symbol].dropna()
+                    volume_trend = vol.iloc[-5:].mean() / vol.iloc[-20:].mean() if len(vol) >= 20 else 1.0
                     breakouts[symbol] = {
                         "current_price": round(current_price, 2),
                         "resistance_level": round(high_52w, 2),
                         "breakout_strength": "strong" if volume_trend > 1.5 else "weak",
                         "volume_confirmation": round(volume_trend, 2),
                     }
-            except Exception as e:
-                logger.debug(f"Failed to find breakout for {symbol}: {e}")
+            except Exception:
                 continue
 
         return dict(list(breakouts.items())[:top_n])
 
     def find_momentum_stocks(self, lookback_days: int = 5, top_n: int = 10) -> dict:
-        """Find stocks with positive momentum."""
+        """Find stocks with consistent upward momentum using a batch download."""
+        data = self._batch_download("20d")
+        if data.empty:
+            return {}
+
         momentum_stocks = {}
+        close = data["Close"] if "Close" in data.columns else data.xs("Close", axis=1, level=0)
 
-        for symbol in self.universe:
+        for symbol in close.columns:
             try:
-                ticker = yf.Ticker(symbol)
-                hist = ticker.history(period="20d")
-
-                if len(hist) < lookback_days:
+                prices = close[symbol].dropna()
+                if len(prices) < lookback_days:
                     continue
-
-                # Calculate momentum: % change over lookback period
-                start_price = hist.iloc[-lookback_days]["Close"]
-                current_price = hist.iloc[-1]["Close"]
+                start_price = prices.iloc[-lookback_days]
+                current_price = prices.iloc[-1]
                 momentum_pct = ((current_price - start_price) / start_price * 100) if start_price != 0 else 0
 
-                # Also check trend consistency
-                closes = hist["Close"].iloc[-lookback_days:].values
-                is_uptrend = all(closes[i] <= closes[i+1] for i in range(len(closes)-1))
+                closes = prices.iloc[-lookback_days:].values
+                is_uptrend = all(closes[i] <= closes[i + 1] for i in range(len(closes) - 1))
 
                 if momentum_pct > 0 and is_uptrend:
                     momentum_stocks[symbol] = {
                         "momentum_pct": round(momentum_pct, 2),
                         "current_price": round(current_price, 2),
-                        "trend_consistency": "consistent" if is_uptrend else "inconsistent",
+                        "trend_consistency": "consistent",
                         "strength": "very_strong" if momentum_pct > 10 else "strong" if momentum_pct > 5 else "moderate",
                     }
-            except Exception as e:
-                logger.debug(f"Failed to find momentum for {symbol}: {e}")
+            except Exception:
                 continue
 
         sorted_momentum = dict(sorted(momentum_stocks.items(), key=lambda x: x[1]["momentum_pct"], reverse=True))

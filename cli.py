@@ -25,8 +25,8 @@ from data import get_session, BarRepository
 from execution import PaperTrader
 from backtesting import Backtester, SMACrossoverStrategy, RSIStrategy, MACDStrategy
 from ai_engine import AIDecisionMaker, Decision
-from ai_engine.mcp_tools import MarketContextProvider
 from ai_engine.mcp_enhanced import ComprehensiveMarketContext
+MarketContextProvider = ComprehensiveMarketContext
 from ai_engine.mcp_scanner import MarketScanner
 from ai_engine.tax_tracker import TaxTracker
 from ai_engine.quant_analyzer import QuantAnalysisEngine

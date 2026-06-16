@@ -122,3 +122,27 @@ class YFinanceCollector:
                 logger.error(f"Failed to backfill {symbol}: {e}")
                 results[symbol] = 0
         return results
+
+    @staticmethod
+    def get_live_price(symbol: str) -> float | None:
+        """
+        Fetch the latest traded price for a symbol via yfinance.
+        Returns None if the fetch fails (market closed, no internet, etc.).
+        """
+        try:
+            info = yf.Ticker(symbol).fast_info
+            price = info.get("last_price") or info.get("previousClose")
+            return float(price) if price else None
+        except Exception as e:
+            logger.warning(f"Could not fetch live price for {symbol}: {e}")
+            return None
+
+    @staticmethod
+    def get_live_prices(symbols: list[str]) -> dict[str, float]:
+        """Fetch live prices for multiple symbols. Missing symbols are omitted."""
+        prices = {}
+        for symbol in symbols:
+            price = YFinanceCollector.get_live_price(symbol)
+            if price is not None:
+                prices[symbol] = price
+        return prices

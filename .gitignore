@@ -48,3 +48,10 @@ Thumbs.db
 *.pem
 *.key
 secrets/
+
+# Runtime artifacts
+*.pid
+*.csv
+get_latest_positions.json
+positions.html
+data/ml_models/

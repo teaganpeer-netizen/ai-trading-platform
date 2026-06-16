@@ -12,6 +12,10 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent))
 
 from data import get_session, BarRepository, TradeRepository
+from data.collectors.yfinance_collector import YFinanceCollector
+from config.settings import settings
+
+INITIAL_CAPITAL = 100_000  # matches PaperTrader default
 
 def export_trades():
     """Export all trades to CSV in Fidelity-like format."""
@@ -26,6 +30,10 @@ def export_trades():
     # Sort by most recent first
     open_trades = sorted(open_trades, key=lambda t: t.entry_time, reverse=True)
     closed_trades = sorted(closed_trades, key=lambda t: t.exit_time or t.entry_time, reverse=True)
+
+    # Batch-fetch live prices for all open symbols
+    open_symbols = list({t.symbol for t in open_trades})
+    live_prices = YFinanceCollector.get_live_prices(open_symbols)
 
     # Write to CSV
     filename = f"trades_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
@@ -47,8 +55,11 @@ def export_trades():
         total_unrealized_pnl = 0
 
         for trade in open_trades:
-            bars = bar_repo.get_bars(trade.symbol, limit=1)
-            current_price = bars[0].close if bars else trade.entry_price
+            if trade.symbol in live_prices:
+                current_price = live_prices[trade.symbol]
+            else:
+                bars = bar_repo.get_bars(trade.symbol, limit=1)
+                current_price = bars[0].close if bars else trade.entry_price
 
             pnl = (current_price - trade.entry_price) * trade.quantity
             pnl_pct = ((current_price - trade.entry_price) / trade.entry_price * 100) if trade.entry_price else 0
@@ -75,7 +86,7 @@ def export_trades():
         # Totals for open positions
         writer.writerow([])
         writer.writerow(['OPEN POSITIONS TOTALS', '', '', '', '', '', '', '', f"${total_open_value:,.2f}"])
-        writer.writerow(['Unrealized P&L', '', '', '', '', '', f"${total_unrealized_pnl:+.2f}", f"{(total_unrealized_pnl/100000*100):+.2f}%", ''])
+        writer.writerow(['Unrealized P&L', '', '', '', '', '', f"${total_unrealized_pnl:+.2f}", f"{(total_unrealized_pnl/INITIAL_CAPITAL*100):+.2f}%", ''])
         writer.writerow([])
 
         # ===== CLOSED TRADES (Latest First) =====
@@ -124,7 +135,7 @@ def export_trades():
             win_rate = 0
 
         writer.writerow([])
-        writer.writerow(['CLOSED TRADES TOTALS', '', '', '', '', '', '', f"${total_closed_pnl:+.2f}", f"{(total_closed_pnl/100000*100):+.2f}%", ''])
+        writer.writerow(['CLOSED TRADES TOTALS', '', '', '', '', '', '', f"${total_closed_pnl:+.2f}", f"{(total_closed_pnl/INITIAL_CAPITAL*100):+.2f}%", ''])
         writer.writerow([])
 
         # ===== SUMMARY STATISTICS =====
@@ -140,7 +151,7 @@ def export_trades():
         writer.writerow(['Unrealized P&L', f"${total_unrealized_pnl:+.2f}"])
         writer.writerow(['Realized P&L', f"${total_closed_pnl:+.2f}"])
         writer.writerow(['Total P&L', f"${total_unrealized_pnl + total_closed_pnl:+.2f}"])
-        writer.writerow(['Total Return %', f"{((total_unrealized_pnl + total_closed_pnl) / 100000 * 100):+.2f}%"])
+        writer.writerow(['Total Return %', f"{((total_unrealized_pnl + total_closed_pnl) / INITIAL_CAPITAL * 100):+.2f}%"])
 
     print(f"✓ Exported to: {filename}")
     print(f"\n📊 Quick Stats:")

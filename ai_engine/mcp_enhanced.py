@@ -246,6 +246,17 @@ class ComprehensiveMarketContext:
 
         return context
 
+    def get_market_overview(self) -> str:
+        """Quick market health summary used by the CLI."""
+        breadth = self.breadth.get_market_breadth()
+        if not breadth:
+            return None
+        consensus = breadth.get("consensus", "unknown").upper()
+        indices = breadth.get("indices", {})
+        index_str = "  ".join(f"{name}: {'↑' if v == 'up' else '↓'}" for name, v in indices.items())
+        event_note = self.calendar.get_event_impact()
+        return f"Market {consensus} | {index_str}\n  {event_note}"
+
     def get_caution_flags(self, symbol: str) -> list[str]:
         """Get any caution flags that should influence trading."""
         flags = []

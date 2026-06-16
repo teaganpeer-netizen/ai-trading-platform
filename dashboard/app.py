@@ -13,6 +13,7 @@ project_root = str(Path(__file__).parent.parent)
 sys.path.insert(0, project_root)
 
 from data import get_session, BarRepository, TradeRepository
+from data.collectors.yfinance_collector import YFinanceCollector
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -42,22 +43,25 @@ def api_account():
         # Get all open trades
         open_trades = trade_repo.get_open_trades()
 
+        # Batch-fetch live prices once
+        open_symbols = list({t.symbol for t in open_trades})
+        live_prices = YFinanceCollector.get_live_prices(open_symbols)
+
         # Calculate portfolio value
         portfolio_value = INITIAL_CAPITAL
         daily_pnl = 0
 
         for trade in open_trades:
-            bars = bar_repo.get_bars(trade.symbol, limit=1)
-            if bars:
-                current_price = bars[0].close
-                # Subtract cost of open positions
-                cost = trade.quantity * trade.entry_price
-                portfolio_value -= cost
-                # Add current value
-                current_value = trade.quantity * current_price
-                portfolio_value += current_value
-                # Track unrealized P&L
-                daily_pnl += (current_price - trade.entry_price) * trade.quantity
+            if trade.symbol in live_prices:
+                current_price = live_prices[trade.symbol]
+            else:
+                bars = bar_repo.get_bars(trade.symbol, limit=1)
+                current_price = bars[0].close if bars else trade.entry_price
+            cost = trade.quantity * trade.entry_price
+            portfolio_value -= cost
+            current_value = trade.quantity * current_price
+            portfolio_value += current_value
+            daily_pnl += (current_price - trade.entry_price) * trade.quantity
 
         # Add closed trades (realized P&L)
         closed_trades = trade_repo.get_closed_trades(limit=100)
@@ -87,9 +91,15 @@ def api_positions():
         positions = []
         open_trades = trade_repo.get_open_trades()
 
+        open_symbols = list({t.symbol for t in open_trades})
+        live_prices = YFinanceCollector.get_live_prices(open_symbols)
+
         for trade in open_trades:
-            bars = bar_repo.get_bars(trade.symbol, limit=1)
-            current_price = bars[0].close if bars else trade.entry_price
+            if trade.symbol in live_prices:
+                current_price = live_prices[trade.symbol]
+            else:
+                bars = bar_repo.get_bars(trade.symbol, limit=1)
+                current_price = bars[0].close if bars else trade.entry_price
 
             pnl = (current_price - trade.entry_price) * trade.quantity
             pnl_pct = ((current_price - trade.entry_price) / trade.entry_price) * 100 if trade.entry_price else 0
