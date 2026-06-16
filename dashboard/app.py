@@ -139,6 +139,31 @@ def api_trades():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/performance")
+def api_performance():
+    """Get performance metrics."""
+    try:
+        open_trades = trade_repo.get_open_trades()
+        closed_trades = trade_repo.get_closed_trades(limit=100)
+
+        total_trades = len(open_trades) + len(closed_trades)
+        winning_trades = sum(1 for t in closed_trades if t.pnl and t.pnl > 0)
+        losing_trades = sum(1 for t in closed_trades if t.pnl and t.pnl < 0)
+        total_pnl = sum(t.pnl or 0 for t in closed_trades)
+
+        return jsonify({
+            "total_trades": total_trades,
+            "winning_trades": winning_trades,
+            "losing_trades": losing_trades,
+            "win_rate_pct": round((winning_trades / (winning_trades + losing_trades) * 100) if (winning_trades + losing_trades) > 0 else 0, 1),
+            "total_realized_pnl": round(total_pnl, 2),
+            "trades_today": len(closed_trades),
+        })
+    except Exception as e:
+        logger.error(f"Error in api_performance: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.errorhandler(404)
 def not_found(error):
     return jsonify({"error": "Not found"}), 404
