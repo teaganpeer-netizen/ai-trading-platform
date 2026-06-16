@@ -27,6 +27,7 @@ from backtesting import Backtester, SMACrossoverStrategy, RSIStrategy, MACDStrat
 from ai_engine import AIDecisionMaker, Decision
 from ai_engine.mcp_tools import MarketContextProvider
 from ai_engine.mcp_enhanced import ComprehensiveMarketContext
+from ai_engine.mcp_scanner import MarketScanner
 from execution.trading_logic import EnhancedTradingLogic
 
 logging.basicConfig(level=logging.INFO)
@@ -51,10 +52,11 @@ def main_menu():
     console.print("1. [green]▶ Run Paper Trading[/green] - AI-powered simulation")
     console.print("2. [yellow]📊 Run Backtester[/yellow] - Test strategies on historical data")
     console.print("3. [cyan]📈 Analyze Single Symbol[/cyan] - Get AI decision & market context")
-    console.print("4. [magenta]🔧 View Risk Manager[/magenta] - Check position sizing & limits")
-    console.print("5. [blue]📊 Dashboard[/blue] - Web monitoring interface")
-    console.print("6. [red]❌ Exit[/red]")
-    choice = console.input("\n[bold]Select option (1-6):[/bold] ")
+    console.print("4. [magenta]🔎 Scan Market[/magenta] - Find high-probability trade candidates")
+    console.print("5. [blue]⚙️ View Risk Manager[/blue] - Check position sizing & limits")
+    console.print("6. [purple]📊 Dashboard[/purple] - Web monitoring interface")
+    console.print("7. [red]❌ Exit[/red]")
+    choice = console.input("\n[bold]Select option (1-7):[/bold] ")
     return choice
 
 
@@ -279,6 +281,82 @@ def show_risk_manager():
     console.print(f"Risk Amount: ${risk_amount:,.2f}")
 
 
+def scan_market_menu():
+    """Scan market for trading opportunities."""
+    console.print("\n[bold]MARKET SCANNER[/bold]")
+    console.print("[dim]Scanning market for high-probability candidates...[/dim]")
+
+    scanner = MarketScanner()
+    results = scanner.run_full_scan(top_n=10)
+
+    # Show summary
+    console.print(scanner.get_scan_summary(results))
+
+    # Ask if user wants to analyze any
+    console.print("\n[bold]Top Opportunities to Analyze:[/bold]")
+    top_opps = results.get("top_opportunities", [])
+
+    for i, opp in enumerate(top_opps[:5], 1):
+        console.print(f"  {i}. {opp['symbol']} (Score: {opp['score']})")
+
+    choice = console.input("\nEnter symbol to analyze (or press Enter to skip): ").upper()
+
+    if choice and choice in [opp["symbol"] for opp in top_opps]:
+        # Analyze the selected symbol
+        try:
+            session = get_session()
+            bar_repo = BarRepository(session)
+            from data import BarProcessor
+
+            bars = bar_repo.get_bars(choice, limit=200)
+            if not bars:
+                console.print(f"[red]No data available for {choice}[/red]")
+                session.close()
+                return
+
+            df = BarProcessor.to_dataframe(bars)
+            df = BarProcessor.enrich_bars(df)
+            current_price = df.iloc[-1]["close"]
+
+            # Get comprehensive context
+            comprehensive_mcp = ComprehensiveMarketContext()
+            enhanced_context = comprehensive_mcp.build_comprehensive_context(choice)
+            caution_flags = comprehensive_mcp.get_caution_flags(choice)
+
+            # Get AI decision
+            ai = AIDecisionMaker(api_key=settings.groq_api_key)
+            decision = ai.analyze_symbol(choice, df, current_price)
+
+            # Display
+            console.print(f"\n[bold cyan]═══════════════════════════════════[/bold cyan]")
+            console.print(f"[bold cyan]{choice} - SCANNER DISCOVERY[/bold cyan]")
+            console.print(f"[bold cyan]═══════════════════════════════════[/bold cyan]")
+
+            console.print(f"\n[bold]Price:[/bold] ${current_price:.2f}")
+            console.print(f"[bold]Action:[/bold] [green]{decision.action}[/green]")
+            console.print(f"[bold]Confidence:[/bold] {decision.confidence:.0%}")
+
+            if caution_flags:
+                console.print(f"\n[yellow]⚠️ CAUTION FLAGS:[/yellow]")
+                for flag in caution_flags:
+                    console.print(f"  {flag}")
+
+            console.print(f"\n[bold]AI Reasoning:[/bold]\n{decision.reasoning}")
+
+            if decision.entry_price:
+                console.print(f"\n[bold]Trading Levels:[/bold]")
+                console.print(f"  Entry: ${decision.entry_price:.2f}")
+                if decision.stop_loss:
+                    console.print(f"  Stop: ${decision.stop_loss:.2f}")
+                if decision.take_profit:
+                    console.print(f"  Target: ${decision.take_profit:.2f}")
+
+            session.close()
+
+        except Exception as e:
+            console.print(f"[red]Error analyzing {choice}: {e}[/red]")
+
+
 def show_dashboard_info():
     """Show dashboard info."""
     console.print("\n[bold]WEB DASHBOARD[/bold]")
@@ -306,10 +384,12 @@ def main():
         elif choice == "3":
             analyze_symbol_menu()
         elif choice == "4":
-            show_risk_manager()
+            scan_market_menu()
         elif choice == "5":
-            show_dashboard_info()
+            show_risk_manager()
         elif choice == "6":
+            show_dashboard_info()
+        elif choice == "7":
             console.print("[yellow]Goodbye![/yellow]")
             break
         else:
