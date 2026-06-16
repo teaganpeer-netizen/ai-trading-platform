@@ -160,5 +160,5 @@ def internal_error(error):
 
 
 if __name__ == "__main__":
-    logger.info("Starting AI Trading Dashboard on http://localhost:5000")
-    app.run(debug=True, port=5000)
+    logger.info("Starting AI Trading Dashboard on http://localhost:8080")
+    app.run(debug=True, port=8080)
