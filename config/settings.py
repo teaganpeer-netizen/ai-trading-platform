@@ -25,8 +25,8 @@ class Settings(BaseSettings):
         description="Alpaca base URL (paper or live)",
     )
 
-    # --- Anthropic (Claude) ---
-    anthropic_api_key: str = Field(default="", description="Anthropic API key")
+    # --- Groq ---
+    groq_api_key: str = Field(default="", description="Groq API key")
 
     # --- Application ---
     environment: str = Field(default="development", description="development | paper | live")
@@ -56,8 +56,8 @@ class Settings(BaseSettings):
             missing.append("ALPACA_API_KEY")
         if not self.alpaca_secret_key:
             missing.append("ALPACA_SECRET_KEY")
-        if not self.anthropic_api_key:
-            missing.append("ANTHROPIC_API_KEY")
+        if not self.groq_api_key:
+            missing.append("GROQ_API_KEY")
         return missing
 
 
