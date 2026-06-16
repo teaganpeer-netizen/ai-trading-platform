@@ -28,6 +28,9 @@ from ai_engine import AIDecisionMaker, Decision
 from ai_engine.mcp_tools import MarketContextProvider
 from ai_engine.mcp_enhanced import ComprehensiveMarketContext
 from ai_engine.mcp_scanner import MarketScanner
+from ai_engine.tax_tracker import TaxTracker
+from ai_engine.quant_analyzer import QuantAnalysisEngine
+from ai_engine.ml_engine import ContinuousLearningPipeline
 from execution.trading_logic import EnhancedTradingLogic
 
 logging.basicConfig(level=logging.INFO)
@@ -55,8 +58,10 @@ def main_menu():
     console.print("4. [magenta]🔎 Scan Market[/magenta] - Find high-probability trade candidates")
     console.print("5. [blue]⚙️ View Risk Manager[/blue] - Check position sizing & limits")
     console.print("6. [purple]📊 Dashboard[/purple] - Web monitoring interface")
-    console.print("7. [red]❌ Exit[/red]")
-    choice = console.input("\n[bold]Select option (1-7):[/bold] ")
+    console.print("7. [green]💰 Tax Tracker[/green] - View tax obligations & reports")
+    console.print("8. [cyan]📊 Quant Analysis[/cyan] - Correlation, regime, cointegration")
+    console.print("9. [red]❌ Exit[/red]")
+    choice = console.input("\n[bold]Select option (1-9):[/bold] ")
     return choice
 
 
@@ -370,6 +375,174 @@ def show_dashboard_info():
     console.print("  • 5-second auto-refresh")
 
 
+def show_tax_tracker_menu():
+    """Show tax tracking menu."""
+    console.print("\n[bold]TAX TRACKING[/bold]")
+    tax_tracker = TaxTracker()
+
+    console.print("\n1. [green]Record a Trade[/green] - Log closed position for taxes")
+    console.print("2. [yellow]View Tax Summary[/yellow] - See gains by year & type")
+    console.print("3. [cyan]Form 8949 Data[/cyan] - Generate reportable transactions")
+    console.print("4. [blue]Quarterly Estimate[/blue] - Calculate estimated payments")
+    console.print("5. [magenta]Full Report[/magenta] - Generate complete tax report")
+    console.print("6. [red]Back[/red]")
+
+    choice = console.input("\n[bold]Select option (1-6):[/bold] ")
+
+    if choice == "1":
+        try:
+            symbol = console.input("Symbol: ").upper()
+            entry_date_str = console.input("Entry date (YYYY-MM-DD): ")
+            exit_date_str = console.input("Exit date (YYYY-MM-DD): ")
+            entry_price = float(console.input("Entry price: "))
+            exit_price = float(console.input("Exit price: "))
+            quantity = float(console.input("Quantity: "))
+
+            from datetime import datetime
+            entry_date = datetime.strptime(entry_date_str, "%Y-%m-%d")
+            exit_date = datetime.strptime(exit_date_str, "%Y-%m-%d")
+
+            event = tax_tracker.record_trade(symbol, entry_date, exit_date, entry_price, exit_price, quantity)
+            console.print(f"\n[green]✓ Trade recorded: {symbol} {'+' if event.gain_loss > 0 else ''}{event.gain_loss:.2f}[/green]")
+            console.print(f"  Holding period: {event.holding_period_days} days")
+            console.print(f"  Classification: {'Long-term' if event.is_long_term else 'Short-term'} capital gain/loss")
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+
+    elif choice == "2":
+        year = int(console.input("Tax year: ") or str(datetime.now().year))
+        summary = tax_tracker.get_tax_summary_by_year(year)
+        console.print(f"\n[bold]TAX SUMMARY - {year}[/bold]")
+        table = Table()
+        table.add_column("Type", style="cyan")
+        table.add_column("Amount", style="green")
+        table.add_row("Short-term gains", f"${summary['short_term_gains']:+,.2f}")
+        table.add_row("Long-term gains", f"${summary['long_term_gains']:+,.2f}")
+        table.add_row("Total gains", f"${summary['total_gains']:+,.2f}")
+        table.add_row("ST Est. Tax (24%)", f"${summary['st_estimated_tax']:,.2f}")
+        table.add_row("LT Est. Tax (15%)", f"${summary['lt_estimated_tax']:,.2f}")
+        table.add_row("Total Est. Tax", f"${summary['total_estimated_tax']:,.2f}")
+        table.add_row("Trades", str(summary['num_trades']))
+        console.print(table)
+
+    elif choice == "3":
+        year = int(console.input("Tax year: ") or str(datetime.now().year))
+        form_8949 = tax_tracker.get_form_8949_data(year)
+        console.print(f"\n[bold]FORM 8949 DATA - {year}[/bold]")
+        if form_8949:
+            table = Table()
+            table.add_column("Description", style="cyan")
+            table.add_column("Acquired", style="dim")
+            table.add_column("Sold", style="dim")
+            table.add_column("Gain/Loss", style="green")
+            for line in form_8949:
+                gl_color = "green" if line["gain_loss"] > 0 else "red"
+                table.add_row(
+                    line["description"],
+                    line["date_acquired"],
+                    line["date_sold"],
+                    f"[{gl_color}]${line['gain_loss']:+,.2f}[/{gl_color}]"
+                )
+            console.print(table)
+        else:
+            console.print("[dim]No transactions for this year[/dim]")
+
+    elif choice == "4":
+        quarterly = tax_tracker.estimate_quarterly_tax()
+        console.print(f"\n[bold]QUARTERLY ESTIMATED PAYMENTS[/bold]")
+        table = Table(show_header=False, box=None)
+        table.add_row("YTD Gains:", f"${quarterly['ytd_gains']:+,.2f}")
+        table.add_row("Est. Annual Tax:", f"${quarterly['estimated_annual_tax']:,.2f}")
+        table.add_row("Quarterly Payment (÷4):", f"${quarterly['quarterly_payment_estimate']:,.2f}")
+        console.print(table)
+
+    elif choice == "5":
+        year = int(console.input("Tax year: ") or str(datetime.now().year))
+        report = tax_tracker.generate_tax_report(year)
+        console.print(report)
+
+
+def show_quant_analysis_menu():
+    """Show quantitative analysis menu."""
+    console.print("\n[bold]QUANTITATIVE ANALYSIS[/bold]")
+    console.print("[dim]Advanced statistical analysis of trading positions[/dim]\n")
+
+    quant = QuantAnalysisEngine()
+
+    console.print("1. [green]Analyze Symbol[/green] - Regime, correlations, cointegration")
+    console.print("2. [yellow]Portfolio Risk[/yellow] - Correlation-based risk assessment")
+    console.print("3. [cyan]Regime Detection[/cyan] - Current market state & changes")
+    console.print("4. [blue]Cointegration Scanner[/blue] - Find mean-reverting pairs")
+    console.print("5. [red]Back[/red]")
+
+    choice = console.input("\n[bold]Select option (1-5):[/bold] ")
+
+    if choice == "1":
+        symbol = console.input("Enter symbol (e.g., AAPL): ").upper()
+        console.print(f"\n[cyan]Analyzing {symbol}...[/cyan]")
+
+        try:
+            session = get_session()
+            bar_repo = BarRepository(session)
+            from data import BarProcessor
+
+            bars = bar_repo.get_bars(symbol, limit=200)
+            if not bars:
+                console.print(f"[red]No data for {symbol}[/red]")
+                session.close()
+                return
+
+            df = BarProcessor.to_dataframe(bars)
+            prices = df["close"].tolist()
+
+            analysis = quant.analyze_symbol(symbol, {symbol: prices}, prices[-1])
+            report = quant.get_analysis_report(analysis)
+            console.print(report)
+
+            session.close()
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+
+    elif choice == "2":
+        console.print("\n[cyan]Portfolio Risk Assessment (placeholder - requires position data)[/cyan]")
+        positions = {"AAPL": 5000, "MSFT": 3000, "TSLA": 2000}
+        risk = CorrelationAnalyzer.get_portfolio_correlation_risk(positions)
+        table = Table(show_header=False, box=None)
+        table.add_row("Risk Level:", f"[yellow]{risk['risk_level'].upper()}[/yellow]")
+        table.add_row("Concentration:", f"{risk['concentration_ratio']:.1%}")
+        table.add_row("Recommendation:", risk['recommendation'])
+        console.print(table)
+
+    elif choice == "3":
+        symbol = console.input("Enter symbol (e.g., SPY): ").upper()
+        try:
+            session = get_session()
+            bar_repo = BarRepository(session)
+            from data import BarProcessor
+
+            bars = bar_repo.get_bars(symbol, limit=200)
+            if bars:
+                df = BarProcessor.to_dataframe(bars)
+                prices = df["close"].tolist()
+                regime = RegimeDetector.detect_regime(prices)
+                regime_change = RegimeDetector.detect_regime_change(prices)
+
+                console.print(f"\n[bold]{symbol} Market Regime[/bold]")
+                console.print(f"State: {regime['regime'].upper()}")
+                console.print(f"Confidence: {regime['confidence']:.0%}")
+                console.print(f"Volatility (annualized): {regime['volatility_annual']:.1%}")
+                if regime_change['regime_change']:
+                    console.print(f"\n[yellow]⚠️ Regime Change: {regime_change['previous_regime']} → {regime_change['current_regime']}[/yellow]")
+
+            session.close()
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+
+
+# Import needed for quant menu
+from ai_engine.quant_analyzer import CorrelationAnalyzer, RegimeDetector
+
+
 def main():
     """Main CLI loop."""
     print_header()
@@ -390,6 +563,10 @@ def main():
         elif choice == "6":
             show_dashboard_info()
         elif choice == "7":
+            show_tax_tracker_menu()
+        elif choice == "8":
+            show_quant_analysis_menu()
+        elif choice == "9":
             console.print("[yellow]Goodbye![/yellow]")
             break
         else:

@@ -2,6 +2,8 @@
 pandas>=2.2.0
 numpy>=1.26.0
 pandas-ta>=0.3.14b
+scipy>=1.12.0
+scikit-learn>=1.4.0
 
 # --- Market Data & Execution ---
 alpaca-py>=0.26.0
