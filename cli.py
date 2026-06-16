@@ -1,0 +1,315 @@
+#!/usr/bin/env python
+"""
+Interactive CLI for the AI Trading Platform.
+Main entry point for running the system.
+"""
+
+import sys
+import os
+from pathlib import Path
+
+# Add project to path
+project_root = str(Path(__file__).parent)
+sys.path.insert(0, project_root)
+
+import logging
+import time
+from datetime import datetime
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.live import Live
+from rich.layout import Layout
+from config.settings import settings
+from data import get_session, BarRepository
+from execution import PaperTrader
+from backtesting import Backtester, SMACrossoverStrategy, RSIStrategy, MACDStrategy
+from ai_engine import AIDecisionMaker, Decision
+from ai_engine.mcp_tools import MarketContextProvider
+from execution.trading_logic import EnhancedTradingLogic
+
+logging.basicConfig(level=logging.INFO)
+console = Console()
+
+
+def print_header():
+    """Print application header."""
+    console.print(
+        Panel(
+            "[bold cyan]🤖 AI TRADING PLATFORM[/bold cyan]\n"
+            "[dim]Production-Grade Algorithmic Trading System[/dim]",
+            expand=False,
+            border_style="cyan",
+        )
+    )
+
+
+def main_menu():
+    """Show main menu."""
+    console.print("\n[bold]MAIN MENU[/bold]")
+    console.print("1. [green]▶ Run Paper Trading[/green] - AI-powered simulation")
+    console.print("2. [yellow]📊 Run Backtester[/yellow] - Test strategies on historical data")
+    console.print("3. [cyan]📈 Analyze Single Symbol[/cyan] - Get AI decision & market context")
+    console.print("4. [magenta]🔧 View Risk Manager[/magenta] - Check position sizing & limits")
+    console.print("5. [blue]📊 Dashboard[/blue] - Web monitoring interface")
+    console.print("6. [red]❌ Exit[/red]")
+    choice = console.input("\n[bold]Select option (1-6):[/bold] ")
+    return choice
+
+
+def run_paper_trading_menu():
+    """Menu for paper trading."""
+    console.print("\n[bold]PAPER TRADING CONFIG[/bold]")
+    iterations = console.input("Number of iterations [default 10]: ") or "10"
+    use_ai = console.input("Use AI for decisions? (y/n) [default y]: ").lower() != 'n'
+
+    try:
+        iterations = int(iterations)
+    except ValueError:
+        iterations = 10
+
+    console.print(f"\n[green]Starting paper trading... ({iterations} iterations)[/green]")
+
+    trader = PaperTrader(initial_capital=100_000)
+    mcp = MarketContextProvider()
+
+    try:
+        for i in range(1, iterations + 1):
+            console.print(f"\n[cyan]--- Iteration {i}/{iterations} ---[/cyan]")
+
+            # Show market context every 3 iterations
+            if i % 3 == 1 and use_ai:
+                overview = mcp.get_market_overview()
+                if overview:
+                    console.print("[dim]Market Status:[/dim]")
+                    for market, data in list(overview.items())[:3]:
+                        change = f"[green]+{data['change_pct']:.2f}%[/green]" if data['change_pct'] > 0 else f"[red]{data['change_pct']:.2f}%[/red]"
+                        console.print(f"  {market}: {change}")
+
+            # Run iteration
+            result = trader.run_iteration(use_ai=use_ai)
+
+            # Show result
+            portfolio_val = f"[green]${result['portfolio_value']:,.0f}[/green]"
+            daily_pnl = result['daily_pnl']
+            pnl_color = "green" if daily_pnl >= 0 else "red"
+            pnl_str = f"[{pnl_color}]{daily_pnl:+,.0f}[/{pnl_color}]"
+
+            console.print(
+                f"Portfolio: {portfolio_val} | "
+                f"Positions: {result['positions_open']} | "
+                f"Daily P&L: {pnl_str} | "
+                f"Circuit: {result['circuit_state']}"
+            )
+
+            time.sleep(0.5)
+
+        # Summary
+        summary = trader.get_summary()
+        console.print("\n[bold]PAPER TRADING SUMMARY[/bold]")
+        table = Table(show_header=False, box=None)
+        table.add_row("Initial Capital:", f"${summary['initial_capital']:,.2f}")
+        table.add_row("Final Portfolio:", f"[green]${summary['current_capital']:,.2f}[/green]")
+        table.add_row("Total Return:", f"[green]{summary['total_return']:+.2f}%[/green]")
+        table.add_row("Daily P&L:", f"[green]{summary['daily_pnl']:+,.2f}[/green]")
+        table.add_row("Open Positions:", f"{summary['open_positions']}")
+        table.add_row("Circuit Breaker:", f"{summary['circuit_state']}")
+        console.print(table)
+
+        trader.close()
+
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Trading interrupted by user[/yellow]")
+        trader.close()
+
+
+def run_backtester_menu():
+    """Menu for backtesting."""
+    console.print("\n[bold]BACKTEST CONFIG[/bold]")
+    console.print("1. SMA Crossover (20/50)")
+    console.print("2. RSI (14, oversold/overbought)")
+    console.print("3. MACD (12/26/9)")
+    strategy_choice = console.input("Select strategy (1-3) [default 1]: ") or "1"
+
+    symbols_input = console.input("Enter symbols (comma-separated) [default SPY,AAPL]: ") or "SPY,AAPL"
+    symbols = [s.strip().upper() for s in symbols_input.split(",")]
+
+    strategies = {
+        "1": ("SMA Crossover", SMACrossoverStrategy()),
+        "2": ("RSI", RSIStrategy()),
+        "3": ("MACD", MACDStrategy()),
+    }
+
+    strategy_name, strategy = strategies.get(strategy_choice, ("SMA Crossover", SMACrossoverStrategy()))
+
+    console.print(f"\n[green]Running {strategy_name} backtest on {', '.join(symbols)}...[/green]")
+
+    backtester = Backtester(strategy=strategy, initial_cash=100_000)
+    results = backtester.run(symbols=symbols)
+
+    if results:
+        stats = results.get("stats", {})
+        console.print("\n[bold]BACKTEST RESULTS[/bold]")
+        table = Table()
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="green")
+
+        table.add_row("Strategy", strategy_name)
+        table.add_row("Initial Capital", f"${stats.get('initial_capital', 0):,.2f}")
+        table.add_row("Final Capital", f"${stats.get('final_value', 0):,.2f}")
+        table.add_row("Total Return", f"{stats.get('total_return_pct', 0):+.2f}%")
+        table.add_row("Max Drawdown", f"{stats.get('max_drawdown', 0):-.2f}%")
+        table.add_row("Trades", f"{stats.get('trades', 0)}")
+        table.add_row("Win Rate", f"{stats.get('win_rate', 0):.1f}%")
+        table.add_row("Profit Factor", f"{stats.get('profit_factor', 0):.2f}x")
+
+        console.print(table)
+
+
+def analyze_symbol_menu():
+    """Analyze a single symbol."""
+    console.print("\n[bold]SYMBOL ANALYSIS[/bold]")
+    symbol = console.input("Enter symbol (e.g., AAPL): ").upper()
+
+    console.print(f"\n[cyan]Analyzing {symbol}...[/cyan]")
+
+    try:
+        session = get_session()
+        bar_repo = BarRepository(session)
+        from data import BarProcessor
+
+        # Get data
+        bars = bar_repo.get_bars(symbol, limit=200)
+        if not bars:
+            console.print(f"[red]No data available for {symbol}[/red]")
+            session.close()
+            return
+
+        df = BarProcessor.to_dataframe(bars)
+        df = BarProcessor.enrich_bars(df)
+        current_price = df.iloc[-1]["close"]
+
+        # Get market context
+        mcp = MarketContextProvider()
+        market_context = mcp.build_ai_context(symbol)
+
+        # Get AI decision
+        ai = AIDecisionMaker(api_key=settings.groq_api_key)
+        decision = ai.analyze_symbol(symbol, df, current_price)
+
+        # Get trading logic assessment
+        latest = df.iloc[-1]
+        quality = EnhancedTradingLogic.rate_entry_quality(
+            current_price, latest.get("sma_20"), latest.get("sma_50"), latest.get("rsi_14")
+        )
+
+        # Display results
+        console.print(f"\n[bold]═══════════════════════════════════[/bold]")
+        console.print(f"[bold cyan]{symbol} ANALYSIS[/bold cyan]")
+        console.print(f"[bold]═══════════════════════════════════[/bold]")
+
+        console.print(f"\n[bold]Price:[/bold] ${current_price:.2f}")
+        console.print(f"[bold]Action:[/bold] [green]{decision.action}[/green]")
+        console.print(f"[bold]Confidence:[/bold] {decision.confidence:.0%}")
+        console.print(f"[bold]Entry Quality:[/bold] {quality['rating']}")
+
+        console.print(f"\n[bold]Reasoning:[/bold]\n{decision.reasoning}")
+
+        if decision.entry_price:
+            console.print(f"\n[bold]Levels:[/bold]")
+            console.print(f"  Entry: ${decision.entry_price:.2f}")
+            console.print(f"  Stop: ${decision.stop_loss:.2f}" if decision.stop_loss else "")
+            console.print(f"  Target: ${decision.take_profit:.2f}" if decision.take_profit else "")
+
+        console.print(f"\n[bold]Technical Indicators:[/bold]")
+        console.print(f"  SMA20: ${latest.get('sma_20', 0):.2f}")
+        console.print(f"  SMA50: ${latest.get('sma_50', 0):.2f}")
+        console.print(f"  RSI14: {latest.get('rsi_14', 0):.1f}")
+        console.print(f"  MACD: {latest.get('macd', 0):.4f}")
+
+        console.print(market_context)
+
+        session.close()
+
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+
+
+def show_risk_manager():
+    """Show risk manager settings."""
+    from risk import RiskManager
+
+    risk_mgr = RiskManager(
+        portfolio_value=100_000,
+        risk_per_trade_pct=settings.max_risk_per_trade_pct,
+        max_daily_loss_pct=settings.daily_loss_limit_pct,
+    )
+
+    console.print("\n[bold]RISK MANAGER SETTINGS[/bold]")
+    table = Table()
+    table.add_column("Parameter", style="cyan")
+    table.add_column("Value", style="green")
+
+    table.add_row("Portfolio Value", f"${100_000:,.2f}")
+    table.add_row("Risk Per Trade", f"{settings.max_risk_per_trade_pct*100:.1f}%")
+    table.add_row("Daily Loss Limit", f"{settings.daily_loss_limit_pct*100:.1f}%")
+    table.add_row("Max Exposure", f"{settings.max_portfolio_exposure_pct*100:.0f}%")
+
+    console.print(table)
+
+    # Example position sizing
+    console.print("\n[bold]EXAMPLE: Position Sizing[/bold]")
+    entry = 100.0
+    stop = 95.0
+    position = risk_mgr.calculate_position_size(entry, stop)
+    risk_amount = position * (entry - stop)
+
+    console.print(f"Entry: ${entry:.2f}")
+    console.print(f"Stop: ${stop:.2f}")
+    console.print(f"Position Size: {position:.0f} shares")
+    console.print(f"Risk Amount: ${risk_amount:,.2f}")
+
+
+def show_dashboard_info():
+    """Show dashboard info."""
+    console.print("\n[bold]WEB DASHBOARD[/bold]")
+    console.print("The web dashboard is available at: [cyan]http://localhost:5000[/cyan]")
+    console.print("\nTo start the dashboard:")
+    console.print("  [yellow]bash scripts/run_dashboard.sh[/yellow]")
+    console.print("\nFeatures:")
+    console.print("  • Real-time portfolio monitoring")
+    console.print("  • Open positions & P&L tracking")
+    console.print("  • Trade history & performance metrics")
+    console.print("  • 5-second auto-refresh")
+
+
+def main():
+    """Main CLI loop."""
+    print_header()
+
+    while True:
+        choice = main_menu()
+
+        if choice == "1":
+            run_paper_trading_menu()
+        elif choice == "2":
+            run_backtester_menu()
+        elif choice == "3":
+            analyze_symbol_menu()
+        elif choice == "4":
+            show_risk_manager()
+        elif choice == "5":
+            show_dashboard_info()
+        elif choice == "6":
+            console.print("[yellow]Goodbye![/yellow]")
+            break
+        else:
+            console.print("[red]Invalid option[/red]")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Exiting...[/yellow]")
+        sys.exit(0)
