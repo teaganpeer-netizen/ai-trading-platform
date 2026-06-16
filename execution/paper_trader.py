@@ -139,28 +139,35 @@ class PaperTrader:
             self._check_close_position(symbol, current_price, df)
             return
 
-        # Check if we should open new position
-        if not use_ai or not self.ai_maker:
-            logger.debug(f"Skipping {symbol} (AI disabled)")
-            return
+        # Try to get BUY decision (AI preferred, fallback to technical)
+        decision = None
 
-        # Get AI decision
-        portfolio_context = {
-            "cash": self.current_capital - sum(
-                qty * price for qty, price, _, _ in self.open_positions.values()
-            ),
-            "open_positions": len(self.open_positions),
-            "portfolio_value": self._calculate_portfolio_value(),
-            "exposure_pct": self.risk_manager.get_exposure(
-                {s: p for s, (q, p, _, _) in self.open_positions.items()}
-            ),
-            "daily_pnl": self.daily_pnl,
-        }
+        if use_ai and self.ai_maker:
+            # Try AI first
+            try:
+                portfolio_context = {
+                    "cash": self.current_capital - sum(
+                        qty * price for qty, price, _, _ in self.open_positions.values()
+                    ),
+                    "open_positions": len(self.open_positions),
+                    "portfolio_value": self._calculate_portfolio_value(),
+                    "exposure_pct": self.risk_manager.get_exposure(
+                        {s: p for s, (q, p, _, _) in self.open_positions.items()}
+                    ),
+                    "daily_pnl": self.daily_pnl,
+                }
 
-        decision = self.ai_maker.analyze_symbol(symbol, df, current_price, portfolio_context)
+                decision = self.ai_maker.analyze_symbol(symbol, df, current_price, portfolio_context)
 
-        if decision.action != "BUY":
-            return
+            except Exception as e:
+                logger.debug(f"AI failed for {symbol}: {e}, using technical analysis")
+                decision = None
+
+        # Fallback to technical analysis if AI unavailable or failed
+        if not decision or decision.action != "BUY":
+            decision = self._get_technical_decision(symbol, df, current_price)
+            if not decision:
+                return
 
         # Check risk limits
         can_trade, reason = self.risk_manager.can_trade(
@@ -179,6 +186,36 @@ class PaperTrader:
 
         # Execute trade
         self._execute_buy(symbol, current_price, decision)
+
+    def _get_technical_decision(self, symbol: str, df, current_price):
+        """Get a trading decision using technical analysis only."""
+        from ai_engine import Decision
+
+        try:
+            sma_20 = df.iloc[-1].get('sma_20', 0)
+            sma_50 = df.iloc[-1].get('sma_50', 0)
+            rsi = df.iloc[-1].get('rsi_14', 50)
+            atr = df.iloc[-1].get('atr_14', current_price * 0.02)
+
+            # Technical buy signal
+            if current_price > sma_20 > sma_50 and rsi < 70:
+                stop_loss = current_price - (2 * atr if atr > 0 else current_price * 0.02)
+                take_profit = current_price + (3 * atr if atr > 0 else current_price * 0.03)
+
+                return Decision(
+                    symbol=symbol,
+                    action="BUY",
+                    confidence=0.70,
+                    entry_price=current_price,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
+                    reasoning=f"Technical: SMA20(${sma_20:.2f}) > SMA50(${sma_50:.2f}), RSI={rsi:.1f}"
+                )
+
+            return None
+        except Exception as e:
+            logger.debug(f"Technical analysis failed for {symbol}: {e}")
+            return None
 
     def _execute_buy(self, symbol: str, current_price: float, decision) -> None:
         """Execute a buy order."""
