@@ -26,6 +26,7 @@ from execution import PaperTrader
 from backtesting import Backtester, SMACrossoverStrategy, RSIStrategy, MACDStrategy
 from ai_engine import AIDecisionMaker, Decision
 from ai_engine.mcp_tools import MarketContextProvider
+from ai_engine.mcp_enhanced import ComprehensiveMarketContext
 from execution.trading_logic import EnhancedTradingLogic
 
 logging.basicConfig(level=logging.INFO)
@@ -171,7 +172,7 @@ def analyze_symbol_menu():
     console.print("\n[bold]SYMBOL ANALYSIS[/bold]")
     symbol = console.input("Enter symbol (e.g., AAPL): ").upper()
 
-    console.print(f"\n[cyan]Analyzing {symbol}...[/cyan]")
+    console.print(f"\n[cyan]Analyzing {symbol} with enhanced MCPs...[/cyan]")
 
     try:
         session = get_session()
@@ -189,9 +190,10 @@ def analyze_symbol_menu():
         df = BarProcessor.enrich_bars(df)
         current_price = df.iloc[-1]["close"]
 
-        # Get market context
-        mcp = MarketContextProvider()
-        market_context = mcp.build_ai_context(symbol)
+        # Get comprehensive market context (with enhanced MCPs)
+        comprehensive_mcp = ComprehensiveMarketContext()
+        enhanced_context = comprehensive_mcp.build_comprehensive_context(symbol)
+        caution_flags = comprehensive_mcp.get_caution_flags(symbol)
 
         # Get AI decision
         ai = AIDecisionMaker(api_key=settings.groq_api_key)
@@ -205,7 +207,7 @@ def analyze_symbol_menu():
 
         # Display results
         console.print(f"\n[bold]═══════════════════════════════════[/bold]")
-        console.print(f"[bold cyan]{symbol} ANALYSIS[/bold cyan]")
+        console.print(f"[bold cyan]{symbol} COMPREHENSIVE ANALYSIS[/bold cyan]")
         console.print(f"[bold]═══════════════════════════════════[/bold]")
 
         console.print(f"\n[bold]Price:[/bold] ${current_price:.2f}")
@@ -213,10 +215,16 @@ def analyze_symbol_menu():
         console.print(f"[bold]Confidence:[/bold] {decision.confidence:.0%}")
         console.print(f"[bold]Entry Quality:[/bold] {quality['rating']}")
 
-        console.print(f"\n[bold]Reasoning:[/bold]\n{decision.reasoning}")
+        # Show caution flags if any
+        if caution_flags:
+            console.print(f"\n[yellow][bold]⚠️ CAUTION FLAGS:[/bold]")
+            for flag in caution_flags:
+                console.print(f"  {flag}")
+
+        console.print(f"\n[bold]AI Reasoning:[/bold]\n{decision.reasoning}")
 
         if decision.entry_price:
-            console.print(f"\n[bold]Levels:[/bold]")
+            console.print(f"\n[bold]Trading Levels:[/bold]")
             console.print(f"  Entry: ${decision.entry_price:.2f}")
             console.print(f"  Stop: ${decision.stop_loss:.2f}" if decision.stop_loss else "")
             console.print(f"  Target: ${decision.take_profit:.2f}" if decision.take_profit else "")
@@ -227,7 +235,8 @@ def analyze_symbol_menu():
         console.print(f"  RSI14: {latest.get('rsi_14', 0):.1f}")
         console.print(f"  MACD: {latest.get('macd', 0):.4f}")
 
-        console.print(market_context)
+        # Show enhanced market context
+        console.print(enhanced_context)
 
         session.close()
 
