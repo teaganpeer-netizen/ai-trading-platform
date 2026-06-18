@@ -126,23 +126,66 @@ class YFinanceCollector:
     @staticmethod
     def get_live_price(symbol: str) -> float | None:
         """
-        Fetch the latest traded price for a symbol via yfinance.
-        Returns None if the fetch fails (market closed, no internet, etc.).
+        Fetch the most recent 1-minute bar close for a symbol.
+        More accurate than fast_info which has no timestamp and can serve cached values.
+        Falls back to previous close if market is closed or fetch fails.
         """
         try:
+            hist = yf.Ticker(symbol).history(period="1d", interval="1m")
+            if not hist.empty:
+                return float(hist["Close"].iloc[-1])
+            # Fallback: previous close (market closed / no data yet today)
             info = yf.Ticker(symbol).fast_info
-            price = info.get("last_price") or info.get("previousClose")
-            return float(price) if price else None
+            return float(info.get("previousClose") or info.get("last_price") or 0) or None
         except Exception as e:
             logger.warning(f"Could not fetch live price for {symbol}: {e}")
             return None
 
     @staticmethod
     def get_live_prices(symbols: list[str]) -> dict[str, float]:
-        """Fetch live prices for multiple symbols. Missing symbols are omitted."""
-        prices = {}
-        for symbol in symbols:
-            price = YFinanceCollector.get_live_price(symbol)
-            if price is not None:
-                prices[symbol] = price
-        return prices
+        """
+        Fetch live prices for multiple symbols in a single batch request.
+        Uses 1-minute bars — one HTTP call regardless of how many symbols.
+        """
+        if not symbols:
+            return {}
+        try:
+            data = yf.download(
+                symbols,
+                period="1d",
+                interval="1m",
+                auto_adjust=True,
+                progress=False,
+                threads=True,
+            )
+            if data.empty:
+                return {}
+
+            close = data["Close"] if "Close" in data.columns else data.xs("Close", axis=1, level=0)
+
+            prices = {}
+            for symbol in symbols:
+                try:
+                    series = close[symbol] if len(symbols) > 1 else close
+                    val = series.dropna().iloc[-1]
+                    if val and val > 0:
+                        prices[symbol] = float(val)
+                except Exception:
+                    pass
+
+            # Fill any missing symbols individually
+            for symbol in symbols:
+                if symbol not in prices:
+                    price = YFinanceCollector.get_live_price(symbol)
+                    if price:
+                        prices[symbol] = price
+
+            return prices
+        except Exception as e:
+            logger.warning(f"Batch price fetch failed ({e}), falling back to per-symbol")
+            prices = {}
+            for symbol in symbols:
+                price = YFinanceCollector.get_live_price(symbol)
+                if price is not None:
+                    prices[symbol] = price
+            return prices
