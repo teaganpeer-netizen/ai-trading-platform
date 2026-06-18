@@ -3,8 +3,9 @@ Paper trading engine that orchestrates all components.
 Simulates real trading with risk management, AI decisions, and Alpaca execution.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dt_time
 from dataclasses import dataclass
+from zoneinfo import ZoneInfo
 import logging
 from data import get_session, BarRepository, BarProcessor, Trade, TradeRepository
 from data.collectors.yfinance_collector import YFinanceCollector
@@ -95,6 +96,7 @@ class PaperTrader:
                     trade.entry_price,
                     trade.entry_time,
                     trade.risk_metric or 0.0,
+                    trade.id,
                 )
                 capital_deployed += trade.quantity * trade.entry_price
         if self.open_positions:
@@ -103,6 +105,17 @@ class PaperTrader:
                 f"✓ Restored {len(self.open_positions)} open position(s) from DB "
                 f"({', '.join(self.open_positions.keys())})"
             )
+
+    @staticmethod
+    def is_market_open() -> bool:
+        """Return True only during NYSE regular hours Mon–Fri 9:30–16:00 ET."""
+        et = ZoneInfo("America/New_York")
+        now = datetime.now(et)
+        if now.weekday() >= 5:  # Saturday=5, Sunday=6
+            return False
+        market_open = dt_time(9, 30)
+        market_close = dt_time(16, 0)
+        return market_open <= now.time() < market_close
 
     def run_iteration(self, use_ai: bool = True) -> dict:
         """
@@ -117,9 +130,13 @@ class PaperTrader:
         iteration_start = datetime.utcnow()
         trades_executed = 0
 
+        market_open = self.is_market_open()
+
         for symbol in self.watchlist:
             try:
-                self._process_symbol(symbol, use_ai=use_ai)
+                # Always check exits (stop losses run 24/7 to protect positions)
+                # Only open new positions during market hours
+                self._process_symbol(symbol, use_ai=use_ai, allow_entry=market_open)
                 trades_executed += 1
             except Exception as e:
                 logger.error(f"Error processing {symbol}: {e}")
@@ -142,9 +159,10 @@ class PaperTrader:
             "daily_pnl": self.daily_pnl,
             "circuit_state": self.circuit_breaker.state.value,
             "ai_enabled": use_ai and self.ai_maker is not None,
+            "market_open": market_open,
         }
 
-    def _process_symbol(self, symbol: str, use_ai: bool = True) -> None:
+    def _process_symbol(self, symbol: str, use_ai: bool = True, allow_entry: bool = True) -> None:
         """Process a single symbol: get signal, execute if valid."""
         # Get latest bars
         bars = self.bar_repo.get_bars(symbol, limit=200)
@@ -160,20 +178,25 @@ class PaperTrader:
         live = YFinanceCollector.get_live_price(symbol)
         current_price = live if live else df.iloc[-1]["close"]
 
-        # Check if we should close existing position
+        # Check if we should close existing position (exits run regardless of market hours)
         if symbol in self.open_positions:
             self._check_close_position(symbol, current_price, df)
+            return
+
+        # Don't open new positions outside market hours
+        if not allow_entry:
+            logger.debug(f"{symbol}: Market closed — skipping entry")
             return
 
         # Portfolio context needed for both risk checks and AI prompt — always compute it
         portfolio_context = {
             "cash": self.current_capital - sum(
-                qty * price for qty, price, _, _ in self.open_positions.values()
+                qty * price for qty, price, _, _, _ in self.open_positions.values()
             ),
             "open_positions": len(self.open_positions),
             "portfolio_value": self._calculate_portfolio_value(),
             "exposure_pct": self.risk_manager.get_exposure(
-                {s: p for s, (q, p, _, _) in self.open_positions.items()}
+                {s: p for s, (q, p, _, _, _) in self.open_positions.items()}
             ),
             "daily_pnl": self.daily_pnl,
         }
@@ -255,7 +278,7 @@ class PaperTrader:
         # Check we have enough cash
         cost = position_size * current_price
         available_cash = self.current_capital - sum(
-            qty * price for qty, price, _, _ in self.open_positions.values()
+            qty * price for qty, price, _, _, _ in self.open_positions.values()
         )
 
         if cost > available_cash:
@@ -264,9 +287,6 @@ class PaperTrader:
 
         # Execute
         self.current_capital -= cost
-        self.open_positions[symbol] = (position_size, current_price, datetime.utcnow(), decision.confidence)
-
-        # Log to database
         trade = Trade(
             symbol=symbol,
             entry_time=datetime.utcnow(),
@@ -279,6 +299,7 @@ class PaperTrader:
             risk_metric=decision.confidence,
         )
         self.trade_repo.create_trade(trade)
+        self.open_positions[symbol] = (position_size, current_price, datetime.utcnow(), decision.confidence, trade.id)
 
         execution = TradeExecution(
             symbol=symbol,
@@ -298,7 +319,7 @@ class PaperTrader:
 
     def _check_close_position(self, symbol: str, current_price: float, df) -> None:
         """Check if we should close an open position."""
-        qty, entry_price, entry_time, ai_conf = self.open_positions[symbol]
+        qty, entry_price, entry_time, ai_conf, trade_id = self.open_positions[symbol]
 
         # Calculate P&L
         pnl = (current_price - entry_price) * qty
@@ -317,7 +338,7 @@ class PaperTrader:
 
         # Update database
         self.trade_repo.update_trade(
-            trade_id=None,  # TODO: track trade IDs
+            trade_id=trade_id,
             exit_price=current_price,
             exit_time=datetime.utcnow(),
             pnl=pnl,
@@ -344,7 +365,7 @@ class PaperTrader:
     def _calculate_portfolio_value(self) -> float:
         """Calculate current portfolio value using live prices."""
         current_value = self.current_capital
-        for symbol, (qty, entry_price, _, _) in self.open_positions.items():
+        for symbol, (qty, entry_price, _, _, _) in self.open_positions.items():
             live = YFinanceCollector.get_live_price(symbol)
             if live:
                 current_value += qty * live

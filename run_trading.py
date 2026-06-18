@@ -117,7 +117,8 @@ class HybridTrader:
                 # Log status every 5 iterations
                 if self.iteration % 5 == 0:
                     mode = "🤖 AI" if self.ai_available else "📊 TECH"
-                    logger.info(f"[{self.iteration:4d}] {mode} | Portfolio: ${portfolio:,.0f} | P&L: ${pnl:+,.0f} | Pos: {positions} | {circuit}")
+                    mkt = "OPEN" if result.get("market_open") else "CLOSED"
+                    logger.info(f"[{self.iteration:4d}] {mode} | Market: {mkt} | Portfolio: ${portfolio:,.0f} | P&L: ${pnl:+,.0f} | Pos: {positions} | {circuit}")
 
                 # Wait before next iteration
                 time_module.sleep(30)
