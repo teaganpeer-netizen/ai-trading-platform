@@ -190,9 +190,7 @@ class PaperTrader:
 
         # Portfolio context needed for both risk checks and AI prompt — always compute it
         portfolio_context = {
-            "cash": self.current_capital - sum(
-                qty * price for qty, price, _, _, _ in self.open_positions.values()
-            ),
+            "cash": self.current_capital,
             "open_positions": len(self.open_positions),
             "portfolio_value": self._calculate_portfolio_value(),
             "exposure_pct": self.risk_manager.get_exposure(
@@ -277,9 +275,7 @@ class PaperTrader:
 
         # Check we have enough cash
         cost = position_size * current_price
-        available_cash = self.current_capital - sum(
-            qty * price for qty, price, _, _, _ in self.open_positions.values()
-        )
+        available_cash = self.current_capital
 
         if cost > available_cash:
             logger.warning(f"{symbol}: Insufficient cash (need ${cost:,.0f}, have ${available_cash:,.0f})")
